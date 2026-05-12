@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local AI PWA - Vision & File</title>
+    <link rel="manifest" href="manifest.json">
+    <style>
+        :root { --primary: #4A90E2; --bg: #f5f7f9; --chat-bg: #ffffff; }
+        body { font-family: -apple-system, sans-serif; background: var(--bg); margin: 0; display: flex; flex-direction: column; height: 100vh; }
+        
+        /* ヘッダー・ステータス */
+        header { background: var(--primary); color: white; padding: 1rem; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        #status { font-size: 0.8rem; margin-top: 5px; opacity: 0.9; }
+
+        /* チャットエリア */
+        #chat-log { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 15px; }
+        .msg { max-width: 80%; padding: 12px 16px; border-radius: 15px; line-height: 1.5; word-wrap: break-word; }
+        .user { align-self: flex-end; background: var(--primary); color: white; }
+        .ai { align-self: flex-start; background: var(--chat-bg); color: #333; border: 1px solid #ddd; }
+
+        /* 入力エリア */
+        .controls { background: white; padding: 15px; border-top: 1px solid #ddd; }
+        .preview-box { display: flex; gap: 10px; margin-bottom: 10px; }
+        .preview-item { position: relative; width: 60px; height: 60px; border-radius: 8px; border: 1px solid #ddd; overflow: hidden; }
+        .preview-item img { width: 100%; height: 100%; object-fit: cover; }
+        
+        .input-row { display: flex; gap: 10px; align-items: center; }
+        input[type="text"] { flex: 1; padding: 12px; border: 1px solid #ddd; border-radius: 25px; outline: none; }
+        button { background: var(--primary); color: white; border: none; padding: 10px 20px; border-radius: 25px; cursor: pointer; transition: 0.2s; }
+        button:disabled { background: #ccc; }
+        .file-btn { background: #eee; color: #333; padding: 10px; border-radius: 50%; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; }
+    </style>
+</head>
+<body>
+
+<header>
+    <strong>Local Vision AI</strong>
+    <div id="status">エンジンの初期化中...</div>
+</header>
+
+<div id="chat-log">
+    <div class="msg ai">こんにちは！画像をアップロードするか、メッセージを入力してください。モデルの初回ダウンロードには数分かかる場合があります。</div>
+</div>
+
+<div class="controls">
+    <div id="preview-area" class="preview-box"></div>
+    <div class="input-row">
+        <input type="file" id="file-input" accept="image/*,.txt,.js,.py" hidden>
+        <button class="file-btn" onclick="document.getElementById('file-input').click()">📎</button>
+        <input type="text" id="user-input" placeholder="質問を入力..." disabled>
+        <button id="send-btn" disabled>送信</button>
+    </div>
+</div>
+
+<script type="module">
+    import * as webllm from "https://esm.run/@mlc-ai/web-llm";
+
+    const statusLabel = document.getElementById("status");
+    const userInput = document.getElementById("user-input");
+    const sendBtn = document.getElementById("send-btn");
+    const chatLog = document.getElementById("chat-log");
+    const previewArea = document.getElementById("preview-area");
+    const fileInput = document.getElementById("file-input");
+
+    // マルチモーダル対応モデル
+    const selectedModel = "Llama-3.2-11B-Vision-Instruct-q4f16_1-MLC";
+    const engine = new webllm.MLCEngine();
+
+    let attachedFile = null;
+
+    // 1. エンジンの初期化
+    async function init() {
+        try {
+            engine.setInitProgressCallback((report) => {
+                statusLabel.innerText = report.text;
+            });
+            await engine.reload(selectedModel);
+            statusLabel.innerText = "準備完了 (オフライン動作可)";
+            userInput.disabled = false;
+            sendBtn.disabled = false;
+        } catch (e) {
+            statusLabel.innerText = "エラー: WebGPUが有効か確認してください";
+            console.error(e);
+        }
+    }
+
+    // 2. ファイル処理（画像プレビュー・テキスト読み込み）
+    fileInput.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        if (file.type.startsWith('image/')) {
+            reader.onload = (event) => {
+                attachedFile = { type: "image", data: event.target.result };
+                previewArea.innerHTML = `<div class="preview-item"><img src="${event.target.result}"></div>`;
+            };
+            reader.readAsDataURL(file);
+        } else {
+            reader.onload = (event) => {
+                attachedFile = { type: "text", data: event.target.result };
+                previewArea.innerHTML = `<div class="preview-item" style="display:grid;place-items:center;font-size:10px;text-align:center;">📄 Text</div>`;
+            };
+            reader.readAsText(file);
+        }
+    };
+
+    // 3. 送信ロジック
+    async function handleSend() {
+        const text = userInput.value;
+        if (!text && !attachedFile) return;
+
+        addMessage(text || (attachedFile.type === "image" ? "画像を解析中..." : "ファイルを解析中..."), "user");
+        userInput.value = "";
+        previewArea.innerHTML = "";
+        sendBtn.disabled = true;
+
+        let content = [];
+        if (attachedFile?.type === "image") {
+            content = [
+                { type: "text", text: text || "この画像について説明してください" },
+                { type: "image_url", image_url: { url: attachedFile.data } }
+            ];
+        } else if (attachedFile?.type === "text") {
+            content = `以下の内容を参考にして回答してください:\n\n${attachedFile.data}\n\n質問: ${text}`;
+        } else {
+            content = text;
+        }
+
+        attachedFile = null; // リセット
+
+        try {
+            const messages = [{ role: "user", content: content }];
+            const reply = await engine.chat.completions.create({ messages });
+            addMessage(reply.choices[0].message.content, "ai");
+        } catch (err) {
+            addMessage("エラーが発生しました。コンソールを確認してください。", "ai");
+            console.error(err);
+        } finally {
+            sendBtn.disabled = false;
+        }
+    }
+
+    function addMessage(msg, role) {
+        const div = document.createElement("div");
+        div.className = `msg ${role}`;
+        div.innerText = msg;
+        chatLog.appendChild(div);
+        chatLog.scrollTop = chatLog.scrollHeight;
+    }
+
+    sendBtn.onclick = handleSend;
+    init();
+
+    // サービスワーカーの登録 (PWA用)
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('./sw.js');
+    }
+</script>
+
+</body>
+</html>
