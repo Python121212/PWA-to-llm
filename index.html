@@ -3,31 +3,381 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Local LLM PWA</title>
-    <link rel="stylesheet" href="style.css">
+    <title>Next Local AI Studio</title>
+    
+    <meta name="theme-color" content="#252526">
+    <meta name="apple-mobile-web-app-capable" content="yes">
     <link rel="manifest" href="manifest.json">
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+
+    <style>
+        :root {
+            --bg-main: #1e1e1e;
+            --bg-sidebar: #252526;
+            --bg-chat: #111111;
+            --accent-blue: #007acc;
+            --accent-green: #24b457;
+            --user-msg-bg: #24b457;
+            --ai-msg-bg: #2d2d2d;
+            --border-color: #3c3c3c;
+            --text-color: #e0e0e0;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; background: var(--bg-main); color: var(--text-color); height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+
+        /* --- 1. 初期セットアップ画面（画面中央配置） --- */
+        #setup-screen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #121212; z-index: 100; display: flex; justify-content: center; align-items: center; padding: 20px; transition: opacity 0.5s ease; }
+        .setup-card { background: var(--bg-sidebar); border: 1px solid var(--border-color); padding: 30px; border-radius: 16px; width: 100%; max-width: 450px; text-align: center; box-shadow: 0 8px 30px rgba(0,0,0,0.5); }
+        .setup-card h2 { margin-bottom: 20px; font-weight: 600; font-size: 24px; color: #fff; }
+        
+        select, input, textarea { width: 100%; background: #333; color: white; border: 1px solid var(--border-color); padding: 12px; border-radius: 8px; font-size: 15px; margin-bottom: 12px; }
+        .btn { background: var(--accent-blue); color: white; border: none; padding: 14px 20px; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: bold; width: 100%; transition: all 0.2s; }
+        .btn:hover { opacity: 0.9; transform: translateY(-1px); }
+        .btn-green { background: var(--accent-green); }
+        
+        #progress-box { margin-top: 15px; font-size: 13px; color: #aaa; text-align: left; max-height: 80px; overflow-y: auto; background: #111; padding: 10px; border-radius: 6px; display: none; }
+
+        /* --- 2. メインアプリヘッダー（ハンバーガーメニューバー） --- */
+        #app-header { background: var(--bg-sidebar); height: 50px; display: flex; align-items: center; padding: 0 15px; border-bottom: 1px solid var(--border-color); position: relative; z-index: 50; }
+        #menu-toggle { font-size: 24px; background: none; border: none; color: white; cursor: pointer; margin-right: 15px; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 5px; }
+        #menu-toggle:hover { background: #333; }
+        #view-title { font-size: 18px; font-weight: bold; color: #fff; }
+
+        /* --- 3. スライド式サイドメニュー（＝を押したら出てくる） --- */
+        #side-menu { position: fixed; top: 50px; left: -280px; width: 280px; height: calc(100vh - 50px); background: var(--bg-sidebar); border-right: 1px solid var(--border-color); z-index: 40; transition: left 0.3s ease; padding: 15px; display: flex; flex-direction: column; gap: 10px; }
+        #side-menu.open { left: 0; }
+        .menu-item { padding: 14px; background: #2d2d2d; border-radius: 8px; cursor: pointer; font-size: 15px; font-weight: 500; display: flex; align-items: center; gap: 10px; border: 1px solid transparent; }
+        .menu-item:hover { background: #37373d; border-color: var(--accent-blue); }
+        .menu-item.active { background: #094771; color: white; }
+        
+        /* メニュー背景の目隠し（スマホ用） */
+        #menu-overlay { position: fixed; top: 50px; left: 0; width: 100vw; height: calc(100vh - 50px); background: rgba(0,0,0,0.5); z-index: 35; display: none; }
+
+        /* --- 4. メインコンテンツ表示エリア (SPA切り替え) --- */
+        #content-area { flex: 1; position: relative; width: 100%; height: calc(100vh - 50px); }
+        .view-panel { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: none; flex-direction: column; }
+        .view-panel.active { display: flex; }
+
+        /* --- 5. LINE風チャット画面の装飾 --- */
+        #chat-view { background: var(--bg-chat); }
+        #chat-timeline { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+        
+        /* チャットバルーン */
+        .bubble-row { display: flex; width: 100%; }
+        .bubble-row.user { justify-content: flex-end; }
+        .bubble-row.ai { justify-content: flex-start; }
+        
+        .bubble { max-width: 75%; padding: 12px 16px; border-radius: 18px; font-size: 15px; line-height: 1.4; word-break: break-all; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+        .user .bubble { background: var(--user-msg-bg); color: #fff; border-top-right-radius: 2px; }
+        .ai .bubble { background: var(--ai-msg-bg); color: #fff; border-top-left-radius: 2px; white-space: pre-wrap; }
+        
+        /* チャット入力エリア（下部固定） */
+        #chat-input-bar { background: var(--bg-sidebar); padding: 10px 15px; border-top: 1px solid var(--border-color); display: flex; align-items: center; gap: 10px; }
+        #chat-input-bar textarea { margin-bottom: 0; resize: none; height: 42px; padding: 10px; border-radius: 20px; background: #1e1e1e; }
+        .round-btn { width: 42px; height: 42px; background: var(--accent-blue); border: none; border-radius: 5px; color: white; cursor: pointer; font-weight: bold; font-size: 18px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+        .round-btn.send { background: var(--accent-green); border-radius: 50%; }
+
+        /* --- 6. VS Code (Monaco) ＆ 設定画面の装飾 --- */
+        #editor-view { background: #1e1e1e; }
+        #editor-grid { display: flex; width: 100%; height: 100%; }
+        #file-sidebar { width: 200px; background: var(--bg-sidebar); border-right: 1px solid var(--border-color); padding: 10px; display: flex; flex-direction: column; gap: 5px; }
+        #monaco-anchor { flex: 1; height: 100%; }
+        #file-tree-list { flex: 1; overflow-y: auto; }
+        .tree-item { padding: 8px; font-size: 13px; cursor: pointer; border-radius: 4px; }
+        .tree-item:hover { background: #333; }
+        .tree-item.active { background: #094771; }
+
+        #settings-view { padding: 20px; overflow-y: auto; gap: 15px; }
+        .setting-group { background: var(--bg-sidebar); padding: 15px; border-radius: 10px; border: 1px solid var(--border-color); margin-bottom: 15px; }
+        .setting-group h3 { margin-bottom: 10px; font-size: 16px; color: #fff; }
+
+        /* PC・大型タブレット用のレスポンシブ（横幅が広い時はメニューを常時展開可能） */
+        @media (min-width: 1024px) {
+            #side-menu { left: 0; top: 50px; height: calc(100vh - 50px); box-shadow: none; }
+            #app-header { padding-left: 15px; }
+            #menu-toggle { display: none; } /* PCでは三本線は隠す、もしくは常時表示 */
+            #content-area { margin-left: 280px; width: calc(100% - 280px); }
+        }
+    </style>
 </head>
 <body>
-    <div id="app">
-        <header>
-            <h1>Local AI Node</h1>
-            <div id="status">準備中...</div>
-        </header>
-        
-        <main id="chat-box"></main>
 
-        <div id="controls">
-            <div class="progress-container">
-                <div id="progress-bar"></div>
+    <div id="setup-screen">
+        <div class="setup-card" id="setup-card">
+            <h2>Local AI Engine</h2>
+            
+            <select id="model-type">
+                <option value="local-preset">ローカル (内蔵軽量モデル)</option>
+                <option value="local-custom">ローカル (HFカスタム読込)</option>
+                <option value="cloud-api">クラウド API (外部超大型AI)</option>
+            </select>
+
+            <div id="setup-preset">
+                <select id="preset-list">
+                    <option value="Qwen2.5-1.5B-Instruct-q4f16_1-MLC">Qwen 3 / 2.5 (1.5B/超軽快)</option>
+                    <option value="DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M">DeepSeek R1 (1.5B/推論思考型)</option>
+                    <option value="Gemma-2-2b-it-q4f16_1-MLC">Gemma 2 (2B/高性能)</option>
+                </select>
             </div>
-            <div class="input-group">
-                <input type="text" id="user-input" placeholder="AIにメッセージを送る..." disabled>
-                <button id="send-btn" disabled>送信</button>
+
+            <div id="setup-custom" style="display:none;">
+                <input type="text" id="custom-repo" placeholder="Hugging Faceリポジトリ名">
+                <input type="text" id="custom-id" placeholder="モデルID">
             </div>
+
+            <div id="setup-cloud" style="display:none;">
+                <select id="cloud-provider">
+                    <option value="https://api.deepseek.com/v1">DeepSeek API</option>
+                    <option value="https://api.openai.com/v1">OpenAI (GPT-4o)</option>
+                </select>
+                <input type="password" id="cloud-key" placeholder="API Keyを入力">
+                <input type="text" id="cloud-model" placeholder="モデル名 (例: deepseek-chat)">
+            </div>
+
+            <button class="btn" id="btn-download">AIモデルをダウンロード/起動</button>
+            <div id="progress-box"></div>
+            
+            <button class="btn btn-green" id="btn-start-chat" style="display:none; margin-top:15px;">チャットを作成して起動</button>
         </div>
     </div>
 
-    <!-- WebLLMをCDNから読み込む -->
-    <script type="module" src="main.js"></script>
-</body>
-</html>
+    <div id="app-header">
+        <button id="menu-toggle">☰</button>
+        <div id="view-title">LINE風 AIチャット</div>
+    </div>
+
+    <div id="menu-overlay"></div>
+
+    <div id="side-menu">
+        <div class="menu-item active" data-target="chat-view">💬 チャット画面</div>
+        <div class="menu-item" data-target="editor-view">💻 VS Code (Monaco)</div>
+        <div class="menu-item" data-target="settings-view">⚙️ 設定・ファイル管理</div>
+        <button class="btn btn-secondary" id="btn-reset-engine" style="margin-top:auto;">🔄 AIモデルを再選択</button>
+    </div>
+
+    <div id="content-area">
+        
+        <div id="chat-view" class="view-panel active">
+            <div id="chat-timeline">
+                <div class="bubble-row ai"><div class="bubble">こんにちは！ローカルAIチャットへようこそ。何を作成・分析しますか？</div></div>
+            </div>
+            <div id="chat-input-bar">
+                <input type="file" id="file-helper" multiple style="display:none;">
+                <button class="round-btn" onclick="document.getElementById('file-helper').click()">＋</button>
+                <textarea id="chat-input" rows="1" placeholder="メッセージを入力..."></textarea>
+                <button class="round-btn send" id="btn-send">➔</button>
+            </div>
+        </div>
+
+        <div id="editor-view" class="view-panel">
+            <div id="editor-grid">
+                <div id="file-sidebar">
+                    <div style="font-size:11px; font-weight:bold; color:#858585; margin-bottom:5px;">WORKSPACE</div>
+                    <div id="file-tree-list"></div>
+                </div>
+                <div id="monaco-anchor"></div>
+            </div>
+        </div>
+
+        <div id="settings-view" class="view-panel">
+            <div class="setting-group">
+                <h3>📦 プロジェクト・エクスポート</h3>
+                <p style="font-size:13px; color:#aaa; margin-bottom:10px;">現在のワークスペース内のファイルを任意の拡張子で一括パックします。</p>
+                <input type="text" id="export-ext" value="zip" placeholder="拡張子 (例: zip, mcaddon, apk)">
+                <button class="btn" id="btn-export">一括パッケージ出力</button>
+            </div>
+            <div class="setting-group">
+                <h3>⚙️ システム情報</h3>
+                <p style="font-size:14px;">推論バックエンド: <span id="sys-backend" style="color:var(--accent-green);">未接続</span></p>
+            </div>
+        </div>
+
+    </div>
+
+    <script type="module">
+        import * as webllm from 'https://esm.run/@mlc-ai/web-llm';
+
+        // 状態管理
+        let editor = null;
+        let aiEngine = null;
+        let currentFileName = "main.js";
+        let vfs = {
+            "main.js": { content: "// AIがここにコードを作成します\nfunction hello() {\n    console.log('Hello Local UI');\n}", lang: "javascript" },
+            "manifest.json": { content: "{\n  \"name\": \"My Local Project\"\n}", lang: "json" }
+        };
+
+        // --- A. PWA & 初期画面モデルダウンロード制御 ---
+        document.getElementById('model-type').addEventListener('change', (e) => {
+            const val = e.target.value;
+            document.getElementById('setup-preset').style.display = val === 'local-preset' ? 'block' : 'none';
+            document.getElementById('setup-custom').style.display = val === 'local-custom' ? 'block' : 'none';
+            document.getElementById('setup-cloud').style.display = val === 'cloud-api' ? 'block' : 'none';
+        });
+
+        document.getElementById('btn-download').addEventListener('click', async () => {
+            const type = document.getElementById('model-type').value;
+            const pBox = document.getElementById('progress-box');
+            pBox.style.display = "block";
+            pBox.innerText = "エンジン起動中...";
+
+            try {
+                if (type === 'local-preset' || type === 'local-custom') {
+                    let modelId = document.getElementById('preset-list').value;
+                    let appConfig = undefined;
+
+                    if(type === 'local-custom') {
+                        const repo = document.getElementById('custom-repo').value;
+                        modelId = document.getElementById('custom-id').value;
+                        appConfig = { model_list: [{ model: repo, model_id: modelId, model_lib: webllm.modelLibURLPrefix + modelId + "-webgpu.wasm" }] };
+                    }
+
+                    aiEngine = new webllm.CreateMLCEngine();
+                    await aiEngine.reload(modelId, {
+                        initProgressCallback: (report) => { pBox.innerText = report.text; }
+                    });
+                    document.getElementById('sys-backend').innerText = `Local WebGPU (${modelId})`;
+                } else {
+                    document.getElementById('sys-backend').innerText = "Cloud API Mode";
+                }
+
+                pBox.innerText = "成功！AIの準備が完了しました。";
+                document.getElementById('btn-download').style.display = "none";
+                document.getElementById('btn-start-chat').style.display = "block";
+
+            } catch (err) {
+                pBox.innerText = "エラー: " + err.message;
+                console.error(err);
+            }
+        });
+
+        // チャット画面起動ボタン
+        document.getElementById('btn-start-chat').addEventListener('click', () => {
+            document.getElementById('setup-screen').style.opacity = "0";
+            setTimeout(() => document.getElementById('setup-screen').style.display = "none", 500);
+            initMonaco(); // バックグラウンドでVS Codeを初期化
+        });
+
+        // --- B. ハンバーガーメニュー(＝)＆ナビゲーション制御 ---
+        const menuToggle = document.getElementById('menu-toggle');
+        const sideMenu = document.getElementById('side-menu');
+        const overlay = document.getElementById('menu-overlay');
+
+        function toggleMenu() {
+            const isOpen = sideMenu.classList.contains('open');
+            if(isOpen) {
+                sideMenu.classList.remove('open');
+                overlay.style.display = "none";
+            } else {
+                sideMenu.classList.add('open');
+                overlay.style.display = "block";
+            }
+        }
+        menuToggle.addEventListener('click', toggleMenu);
+        overlay.addEventListener('click', toggleMenu);
+
+        // メニュー項目切り替え
+        document.querySelectorAll('.menu-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                document.querySelectorAll('.menu-item').forEach(m => m.classList.remove('active'));
+                item.classList.add('active');
+                
+                const targetView = item.getAttribute('data-target');
+                document.querySelectorAll('.view-panel').forEach(view => view.classList.remove('active'));
+                document.getElementById(targetView).classList.add('active');
+
+                document.getElementById('view-title').innerText = item.innerText;
+                
+                // スマホ表示ならメニューを自動で閉じる
+                if(window.innerWidth < 1024) toggleMenu();
+            });
+        });
+
+        document.getElementById('btn-reset-engine').addEventListener('click', () => {
+            location.reload();
+        });
+
+        // --- C. VS Code (Monaco Editor) ハンドリング ---
+        function initMonaco() {
+            require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.43.0/min/vs' } });
+            require(['vs/editor/editor.main'], function() {
+                editor = monaco.editor.create(document.getElementById('monaco-anchor'), {
+                    value: vfs[currentFileName].content,
+                    language: vfs[currentFileName].lang,
+                    theme: 'vs-dark',
+                    automaticLayout: true,
+                    minimap: { enabled: false }
+                });
+
+                editor.onDidChangeModelContent(() => {
+                    if(currentFileName) vfs[currentFileName].content = editor.getValue();
+                });
+
+                renderTree();
+            });
+        }
+
+        function renderTree() {
+            const treeContainer = document.getElementById('file-tree-list');
+            treeContainer.innerHTML = "";
+            Object.keys(vfs).forEach(name => {
+                const item = document.createElement('div');
+                item.className = `tree-item ${name === currentFileName ? 'active' : ''}`;
+                item.innerText = name;
+                item.onclick = () => {
+                    currentFileName = name;
+                    monaco.editor.setModelLanguage(editor.getModel(), vfs[name].lang);
+                    editor.setValue(vfs[name].content);
+                    renderTree();
+                };
+                treeContainer.appendChild(item);
+            });
+        }
+
+        // --- D. LINE風チャットの送受信ロジック ---
+        document.getElementById('btn-send').addEventListener('click', handleChatSend);
+        
+        async function handleChatSend() {
+            const inputElement = document.getElementById('chat-input');
+            const prompt = inputElement.value.trim();
+            if(!prompt) return;
+
+            inputElement.value = "";
+            appendBubble("user", prompt);
+
+            const aiBubble = appendBubble("ai", "思考中...");
+
+            // 仮想ファイルシステム全体の文脈を裏で結合
+            let context = "【現在のソースコード構造】\n";
+            Object.keys(vfs).forEach(k => { context += `\n/* --- File: ${k} --- */\n${vfs[k].content}\n`; });
+            const fullPrompt = `${context}\n\nユーザーからの指示: ${prompt}`;
+
+            const type = document.getElementById('model-type').value;
+
+            if (type === 'cloud-api') {
+                const endpoint = document.getElementById('cloud-provider').value;
+                const apiKey = document.getElementById('cloud-key').value;
+                const modelName = document.getElementById('cloud-model').value;
+                try {
+                    const res = await fetch(`${endpoint}/chat/completions`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+                        body: JSON.stringify({ model: modelName, messages: [{ role: "user", content: fullPrompt }] })
+                    });
+                    const data = await res.json();
+                    aiBubble.innerText = data.choices[0].message.content;
+                } catch(e) { aiBubble.innerText = `API通信エラー: ${e.message}`; }
+            } else {
+                if(!aiEngine) { aiBubble.innerText = "エラー: AIエンジンが起動していません。"; return; }
+                try {
+                    aiBubble.innerText = "";
+                    const chunks = await aiEngine.chat.completions.create({
+                        messages: [{ role: "user", content: fullPrompt }], stream: true
+                    });
+                    for await (const chunk of chunks) {
+                        aiBubble.innerText += chunk.choices[0].delta.content || "";
+                    }
+                } catch (e) { aiBubble.in
